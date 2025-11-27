@@ -1,23 +1,17 @@
 from tkinter import Tk, filedialog, Label, Entry, Button
-import openai
-import json
-import os
-import re
-from dotenv import load_dotenv
 from google.cloud import vision
+import openai
+import os
+import json
+import re
 
 # -------------------------
-# Load OpenAI API key
+# OpenAI API key
 # -------------------------
-load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY")
 if not openai_api_key:
-    raise ValueError("OpenAI API key not found. Create a .env file with OPENAI_API_KEY.")
+    raise ValueError("Set OPENAI_API_KEY in environment variables.")
 openai.api_key = openai_api_key
-
-# Check Google Vision credentials
-if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-    raise ValueError("Set GOOGLE_APPLICATION_CREDENTIALS environment variable with your JSON key path.")
 
 # -------------------------
 # AppointmentCard class
@@ -55,84 +49,103 @@ def google_vision_ocr(image_path):
     response = client.text_detection(image=image)
     texts = response.text_annotations
     if texts:
-        return texts[0].description  # full recognized text
-    return ""
+        return texts[0].description
+    else:
+        return ""
 
 # -------------------------
-# Preprocess OCR text
+# Extract date, time, description via regex
 # -------------------------
-def preprocess_text(text):
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+def parse_fields_from_text(text):
+    text_clean = text.replace("\n", " ").replace("  ", " ").strip()
 
-# -------------------------
-# Extract date/time via regex
-# -------------------------
-def extract_date_time(text):
-    time_match = re.search(r'\b\d{1,2}[:.]\d{2}\s*(AM|PM|am|pm)\b', text)
+    # Date regex (MM-DD-YYYY or Month D YYYY)
+    date_match = re.search(r'\b(\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\w+\s\d{1,2}\s\d{4})\b', text_clean)
+    date = date_match.group() if date_match else ""
+
+    # Time regex (HH:MM AM/PM or H AM/PM)
+    time_match = re.search(r'\b\d{1,2}(:\d{2})?\s*(AM|PM|am|pm)\b', text_clean)
     time = time_match.group() if time_match else ""
 
-    date_match = re.search(
-        r'(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2} \d{4}\b)|(\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b)',
-        text
-    )
-    date = date_match.group() if date_match else ""
-    return date, time
+    # Remove date and time
+    description = text_clean
+    for part in [date, time]:
+        if part:
+            description = description.replace(part, "")
 
-# -------------------------
-# Extract location via regex
-# -------------------------
-def extract_location(text):
-    match = re.search(r'([A-Z\s]*(CLINIC|DENTAL|HOSPITAL)[A-Z\s]*)', text, re.IGNORECASE)
-    return match.group().strip() if match else ""
+    # Remove URLs
+    description = re.sub(r'https?://\S+', '', description)
+    # Remove phone numbers
+    description = re.sub(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', '', description)
+    # Remove names / known words
+    description = re.sub(r'\b(Name|Date|Time|Davyd)\b', '', description, flags=re.IGNORECASE)
+    # Remove addresses (numbers + street keywords)
+    description = re.sub(r'\d+\s\w+(?:\s\w+)?\s(St\.?|Rd\.?|Ave\.?)', '', description, flags=re.IGNORECASE)
 
+    # Extract only key appointment words
+    appointment_words = re.findall(r'\b(APPOINTMENT|DENTAL|HEALTH|VISIT|CHECKUP)\b', description, flags=re.IGNORECASE)
+    # Remove duplicates and preserve order
+    seen = set()
+    unique_words = []
+    for w in appointment_words:
+        w_upper = w.upper()
+        if w_upper not in seen:
+            seen.add(w_upper)
+            unique_words.append(w_upper)
+    description = " ".join(unique_words)
+    if not description:
+        description = "General appointment"
+
+    return {"date": date, "time": time, "description": description}
 # -------------------------
-# GPT parser for description
+# GPT for location only
 # -------------------------
-def parse_text_with_gpt(text):
+def parse_location_with_gpt(text):
     prompt = f"""
-You are an assistant that extracts appointment information from text.
-Recognize:
-- description (purpose of appointment)
-Return JSON with keys: date, time, location, description.
-Text: {text}
+You are an assistant that extracts the location (clinic/hospital/office name + city) from OCR text.
+Return ONLY a single string containing the location.
+If you cannot find it, return an empty string.
+
+OCR Text:
+\"\"\"{text}\"\"\"
 """
     response = openai.chat.completions.create(
         model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0
     )
     try:
-        data = json.loads(response.choices[0].message.content)
+        location = response.choices[0].message.content.strip()
     except:
-        data = {"date": "", "time": "", "location": "", "description": ""}
-    return data
+        location = ""
+    return location
 
 # -------------------------
-# GUI form
+# GUI
 # -------------------------
-def show_edit_form(user, initial_data):
+def show_edit_form(user, data):
     root = Tk()
     root.title("Edit Appointment Details")
 
     Label(root, text="Date:").grid(row=0, column=0)
     date_entry = Entry(root, width=30)
     date_entry.grid(row=0, column=1)
-    date_entry.insert(0, initial_data.get("date") or "")
+    date_entry.insert(0, data.get("date") or "")
 
     Label(root, text="Time:").grid(row=1, column=0)
     time_entry = Entry(root, width=30)
     time_entry.grid(row=1, column=1)
-    time_entry.insert(0, initial_data.get("time") or "")
+    time_entry.insert(0, data.get("time") or "")
 
     Label(root, text="Location:").grid(row=2, column=0)
-    location_entry = Entry(root, width=30)
+    location_entry = Entry(root, width=50)
     location_entry.grid(row=2, column=1)
-    location_entry.insert(0, initial_data.get("location") or "")
+    location_entry.insert(0, data.get("location") or "")
 
     Label(root, text="Description:").grid(row=3, column=0)
     description_entry = Entry(root, width=50)
     description_entry.grid(row=3, column=1)
-    description_entry.insert(0, initial_data.get("description") or "")
+    description_entry.insert(0, data.get("description") or "")
 
     def add_appointment():
         appt = AppointmentCard(
@@ -148,7 +161,7 @@ def show_edit_form(user, initial_data):
     root.mainloop()
 
 # -------------------------
-# Main function
+# Main
 # -------------------------
 def main():
     user = User("Andrii")
@@ -159,42 +172,29 @@ def main():
         title="Select an appointment card image",
         filetypes=[("Image files", "*.jpg *.jpeg *.png")]
     )
+
     if not file_path:
         print("No file selected.")
         return
 
-    # OCR через Google Vision
+    # Google Vision OCR
     ocr_text = google_vision_ocr(file_path)
     print("\nText extracted from image:")
     print(ocr_text)
 
-    clean_text = preprocess_text(ocr_text)
+    # Parse fields without GPT
+    parsed_data = parse_fields_from_text(ocr_text)
 
-    # Regex extraction
-    date, time = extract_date_time(ocr_text)
-    location = extract_location(ocr_text)
+    # GPT only for location
+    parsed_data["location"] = parse_location_with_gpt(ocr_text)
 
-    # GPT parsing
-    parsed_data = parse_text_with_gpt(clean_text)
-
-    # Fill missing fields from regex
-    if not parsed_data.get("date"):
-        parsed_data["date"] = date
-    if not parsed_data.get("time"):
-        parsed_data["time"] = time
-    if not parsed_data.get("location"):
-        parsed_data["location"] = location
-    if not parsed_data.get("description"):
-        parsed_data["description"] = "General appointment"
-
-    print("\nParsed data from GPT + regex fallback:")
+    print("\nParsed data:")
     print(parsed_data)
 
-    # GUI for editing
+    # GUI to confirm/edit
     show_edit_form(user, parsed_data)
 
-    # Display all appointments
-    print("\nAll appointments for the user:")
+    print("\nAll appointments:")
     for a in user.appointments:
         print(a)
 
