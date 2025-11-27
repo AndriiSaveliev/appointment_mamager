@@ -1,10 +1,10 @@
 from tkinter import Tk, filedialog, Label, Entry, Button
-import easyocr
 import openai
 import json
 import os
 import re
 from dotenv import load_dotenv
+from google.cloud import vision
 
 # -------------------------
 # Load OpenAI API key
@@ -12,8 +12,12 @@ from dotenv import load_dotenv
 load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY")
 if not openai_api_key:
-    raise ValueError("API key not found. Create a .env file with OPENAI_API_KEY.")
+    raise ValueError("OpenAI API key not found. Create a .env file with OPENAI_API_KEY.")
 openai.api_key = openai_api_key
+
+# Check Google Vision credentials
+if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    raise ValueError("Set GOOGLE_APPLICATION_CREDENTIALS environment variable with your JSON key path.")
 
 # -------------------------
 # AppointmentCard class
@@ -41,23 +45,23 @@ class User:
         print(f"Appointment added: {appointment}")
 
 # -------------------------
-# OCR Scanner
+# Google Vision OCR
 # -------------------------
-class OCRScanner:
-    def __init__(self):
-        self.reader = easyocr.Reader(['en'])
-
-    def scan(self, image_path):
-        result = self.reader.readtext(image_path)
-        text = " ".join([t[1] for t in result])
-        return text
+def google_vision_ocr(image_path):
+    client = vision.ImageAnnotatorClient()
+    with open(image_path, "rb") as f:
+        content = f.read()
+    image = vision.Image(content=content)
+    response = client.text_detection(image=image)
+    texts = response.text_annotations
+    if texts:
+        return texts[0].description  # full recognized text
+    return ""
 
 # -------------------------
 # Preprocess OCR text
 # -------------------------
 def preprocess_text(text):
-    text = text.lower()
-    text = re.sub(r'[^a-z0-9: /.,-]', ' ', text)
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
@@ -68,13 +72,15 @@ def extract_date_time(text):
     time_match = re.search(r'\b\d{1,2}[:.]\d{2}\s*(AM|PM|am|pm)\b', text)
     time = time_match.group() if time_match else ""
 
-    date_match = re.search(r'(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2} \d{4}\b)|(\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b)', text)
+    date_match = re.search(
+        r'(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2} \d{4}\b)|(\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b)',
+        text
+    )
     date = date_match.group() if date_match else ""
-
     return date, time
 
 # -------------------------
-# Extract location via improved regex
+# Extract location via regex
 # -------------------------
 def extract_location(text):
     match = re.search(r'([A-Z\s]*(CLINIC|DENTAL|HOSPITAL)[A-Z\s]*)', text, re.IGNORECASE)
@@ -95,7 +101,6 @@ Text: {text}
         model="gpt-4.1-mini",
         messages=[{"role": "user", "content": prompt}]
     )
-
     try:
         data = json.loads(response.choices[0].message.content)
     except:
@@ -143,7 +148,7 @@ def show_edit_form(user, initial_data):
     root.mainloop()
 
 # -------------------------
-# Main
+# Main function
 # -------------------------
 def main():
     user = User("Andrii")
@@ -158,21 +163,19 @@ def main():
         print("No file selected.")
         return
 
-    # OCR
-    scanner = OCRScanner()
-    ocr_text = scanner.scan(file_path)
+    # OCR через Google Vision
+    ocr_text = google_vision_ocr(file_path)
     print("\nText extracted from image:")
     print(ocr_text)
 
-    # Preprocess text
-    clean_text_data = preprocess_text(ocr_text)
+    clean_text = preprocess_text(ocr_text)
 
-    # Extract date, time, location
+    # Regex extraction
     date, time = extract_date_time(ocr_text)
     location = extract_location(ocr_text)
 
-    # GPT parsing (description)
-    parsed_data = parse_text_with_gpt(clean_text_data)
+    # GPT parsing
+    parsed_data = parse_text_with_gpt(clean_text)
 
     # Fill missing fields from regex
     if not parsed_data.get("date"):
@@ -181,8 +184,6 @@ def main():
         parsed_data["time"] = time
     if not parsed_data.get("location"):
         parsed_data["location"] = location
-
-    # If description is empty, fill with default
     if not parsed_data.get("description"):
         parsed_data["description"] = "General appointment"
 
