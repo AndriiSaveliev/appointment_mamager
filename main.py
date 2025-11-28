@@ -64,11 +64,11 @@ def parse_fields_from_text(text):
     text_clean = text.replace("\n", " ").replace("  ", " ").strip()
 
     # Date regex (MM-DD-YYYY or Month D YYYY)
-    date_match = re.search(r'\b(\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\w+\s\d{1,2}\s\d{4})\b', text_clean)
+    date_match = re.search(r'\b(\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\w+\s\d{1,2},?\s\d{4})\b', text_clean)
     date = date_match.group() if date_match else ""
 
     # Time regex (HH:MM AM/PM or H AM/PM)
-    time_match = re.search(r'\b\d{1,2}(:\d{2})?\s*(AM|PM|am|pm)\b', text_clean)
+    time_match = re.search(r'\b\d{1,2}(:\d{2})?\s*(A\.?M\.?|P\.?M\.?)\b', text_clean, flags=re.IGNORECASE)
     time = time_match.group() if time_match else ""
 
     # Remove date and time from description
