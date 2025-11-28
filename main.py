@@ -2,15 +2,22 @@ from tkinter import Tk, filedialog, Label, Entry, Button
 from google.cloud import vision
 import openai
 import os
+from dotenv import load_dotenv
 import json
 import re
 
 # -------------------------
-# OpenAI API key
+# Load environment variables
 # -------------------------
+load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY")
+google_key_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+
 if not openai_api_key:
     raise ValueError("Set OPENAI_API_KEY in environment variables.")
+if not google_key_path or not os.path.exists(google_key_path):
+    raise ValueError("Set GOOGLE_APPLICATION_CREDENTIALS environment variable with valid JSON key path.")
+
 openai.api_key = openai_api_key
 
 # -------------------------
@@ -48,10 +55,7 @@ def google_vision_ocr(image_path):
     image = vision.Image(content=content)
     response = client.text_detection(image=image)
     texts = response.text_annotations
-    if texts:
-        return texts[0].description
-    else:
-        return ""
+    return texts[0].description if texts else ""
 
 # -------------------------
 # Extract date, time, description via regex
@@ -67,7 +71,7 @@ def parse_fields_from_text(text):
     time_match = re.search(r'\b\d{1,2}(:\d{2})?\s*(AM|PM|am|pm)\b', text_clean)
     time = time_match.group() if time_match else ""
 
-    # Remove date and time
+    # Remove date and time from description
     description = text_clean
     for part in [date, time]:
         if part:
@@ -77,14 +81,11 @@ def parse_fields_from_text(text):
     description = re.sub(r'https?://\S+', '', description)
     # Remove phone numbers
     description = re.sub(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', '', description)
-    # Remove names / known words
+    # Remove common unwanted words
     description = re.sub(r'\b(Name|Date|Time|Davyd)\b', '', description, flags=re.IGNORECASE)
-    # Remove addresses (numbers + street keywords)
-    description = re.sub(r'\d+\s\w+(?:\s\w+)?\s(St\.?|Rd\.?|Ave\.?)', '', description, flags=re.IGNORECASE)
 
-    # Extract only key appointment words
+    # Extract keywords for appointment
     appointment_words = re.findall(r'\b(APPOINTMENT|DENTAL|HEALTH|VISIT|CHECKUP)\b', description, flags=re.IGNORECASE)
-    # Remove duplicates and preserve order
     seen = set()
     unique_words = []
     for w in appointment_words:
@@ -92,36 +93,35 @@ def parse_fields_from_text(text):
         if w_upper not in seen:
             seen.add(w_upper)
             unique_words.append(w_upper)
-    description = " ".join(unique_words)
-    if not description:
-        description = "General appointment"
+    description = " ".join(unique_words) or "General appointment"
 
     return {"date": date, "time": time, "description": description}
+
 # -------------------------
 # GPT for location only
 # -------------------------
 def parse_location_with_gpt(text):
     prompt = f"""
 You are an assistant that extracts the location (clinic/hospital/office name + city) from OCR text.
-Return ONLY a single string containing the location.
-If you cannot find it, return an empty string.
+Return ONLY a single string containing the location. If you cannot find it, return an empty string.
 
 OCR Text:
 \"\"\"{text}\"\"\"
 """
-    response = openai.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
     try:
+        response = openai.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
         location = response.choices[0].message.content.strip()
-    except:
+    except Exception as e:
+        print(f"GPT error: {e}")
         location = ""
     return location
 
 # -------------------------
-# GUI
+# Tkinter GUI
 # -------------------------
 def show_edit_form(user, data):
     root = Tk()
@@ -182,7 +182,7 @@ def main():
     print("\nText extracted from image:")
     print(ocr_text)
 
-    # Parse fields without GPT
+    # Parse fields via regex
     parsed_data = parse_fields_from_text(ocr_text)
 
     # GPT only for location
@@ -191,7 +191,7 @@ def main():
     print("\nParsed data:")
     print(parsed_data)
 
-    # GUI to confirm/edit
+    # GUI for confirmation/edit
     show_edit_form(user, parsed_data)
 
     print("\nAll appointments:")
