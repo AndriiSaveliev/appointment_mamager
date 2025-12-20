@@ -35,6 +35,13 @@ Notes:
 
 Billing is required: Google Vision API requires a billing account enabled. Sensitive keys such as .env or JSON key files should not be committed to GitHub.
 
+Project Status
+
+The Appointment Manager project is fully functional. It extracts appointment information accurately from images and allows users to review and edit data.
+
+Planned Feature: Integration with Google Calendar for automatic saving of appointments was intended but not implemented due to time constraints. The current system works fully without calendar integration and meets the core requirements of the project.
+
+
 License:
 
 MIT License
